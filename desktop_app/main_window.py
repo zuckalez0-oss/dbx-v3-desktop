@@ -5,6 +5,7 @@ from openpyxl import load_workbook, Workbook
 import sys
 import os
 import json
+import shutil
 import pandas as pd
 import time
 import unicodedata
@@ -642,6 +643,7 @@ class MainWindow(QMainWindow):
                 <ol>
                     <li><b>Inicie um novo projeto</b><br/>Clique em <b>Iniciar Novo Projeto...</b> e defina o número/nome do projeto que será usado para salvar os arquivos.</li>
                     <li><b>Ajuste os parâmetros de custo</b><br/>Confira os campos de <b>Imposto</b> e <b>Frete</b> antes de exportar o resumo para Excel.</li>
+                    <li><b>Baixe os arquivos base quando precisar</b><br/>Use o botão <b>Arquivos Base</b> no topo da janela para salvar a planilha modelo de produção, o arquivo <b>codigo_database.xlsx</b> e o guia rápido de uso.</li>
                     <li><b>Carregue dados externos, se necessário</b><br/>Use <b>Selecionar Planilha</b> para importar uma planilha de peças e <b>Importar DXF(s)</b> para trazer geometrias prontas.</li>
                     <li><b>Cadastre a peça manualmente</b><br/>Preencha <b>Nome/ID da Peça</b>, <b>Forma</b>, <b>Espessura</b>, <b>Quantidade</b> e as dimensões exibidas conforme o tipo escolhido.</li>
                     <li><b>Adicione furos quando aplicável</b><br/>Em <b>Furação Rápida</b>, replique furos em peças retangulares. Em <b>Furos Manuais</b>, informe diâmetro e coordenadas e clique em <b>Adicionar Furo Manual</b>.</li>
@@ -663,6 +665,252 @@ class MainWindow(QMainWindow):
         close_btn.clicked.connect(dialog.accept)
         close_layout.addWidget(close_btn)
         layout.addLayout(close_layout)
+        dialog.exec_()
+
+    def _default_downloads_dir(self):
+        downloads_dir = Path.home() / "Downloads"
+        if downloads_dir.exists():
+            return downloads_dir
+        return Path.home()
+
+    def _support_file_source(self, filename):
+        source_path = find_resource_path(filename)
+        if source_path is None:
+            raise FileNotFoundError(f"O arquivo de suporte '{filename}' nao foi encontrado no pacote da aplicacao.")
+        return Path(source_path)
+
+    def _support_instructions_text(self):
+        active_db_dir = Path(self.code_generator.db_path).parent
+        return "\n".join(
+            [
+                "ARQUIVOS BASE DBX-V3",
+                "",
+                "1. planilha-dbx.xlsx",
+                "- Use esta planilha como layout modelo para importar pecas em lote.",
+                "- Preencha uma linha por peca e salve o arquivo.",
+                "- Na aplicacao, clique em 'Selecionar Planilha' para importar o lote.",
+                "- Colunas comuns: nome_arquivo, forma, espessura, qtd, largura, altura, diametro e furos.",
+                "- Para furos em lote, use grupos como: furo_1_diametro, furo_1_x, furo_1_y.",
+                "",
+                "2. codigo_database.xlsx",
+                "- Esse arquivo controla a base de codigos usada no botao 'Gerar Codigo'.",
+                "- Para usar prefixo personalizado, edite a celula D2 com o prefixo desejado.",
+                "- Exemplo de prefixo: LAS, CNC, PRT ou qualquer sigla padrao da sua operacao.",
+                "- Salve o arquivo e feche o Excel antes de instalar/substituir a base.",
+                "- Depois, na aplicacao, abra 'Arquivos Base' e use 'Instalar Codigo Database'.",
+                "",
+                "3. Pasta ativa da aplicacao",
+                f"- Local atual da base ativa: {active_db_dir}",
+                "",
+                "DICAS",
+                "- O pacote completo exporta os dois arquivos e este guia em uma pasta unica.",
+                "- Se o Excel estiver aberto durante a instalacao da base, o Windows pode bloquear a copia.",
+                "- Apos instalar uma nova base de codigos, o prefixo passa a valer nos proximos codigos gerados.",
+            ]
+        )
+
+    def _copy_support_file(self, filename, destination_path):
+        source_path = self._support_file_source(filename)
+        destination = Path(destination_path)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source_path, destination)
+        return destination
+
+    def export_support_file(self, filename, label):
+        try:
+            default_path = self._default_downloads_dir() / filename
+            save_path, _ = QFileDialog.getSaveFileName(
+                self,
+                f"Salvar {label}",
+                str(default_path),
+                "Excel Files (*.xlsx)",
+            )
+            if not save_path:
+                return
+
+            target_path = Path(save_path)
+            if target_path.suffix.lower() != ".xlsx":
+                target_path = target_path.with_suffix(".xlsx")
+
+            copied_path = self._copy_support_file(filename, target_path)
+            self.log_text.append(f"Arquivo de suporte exportado: {copied_path}")
+            self.statusBar().showMessage(f"{label} salvo com sucesso.", 3000)
+            QMessageBox.information(
+                self,
+                "Arquivo salvo",
+                f"{label} salvo com sucesso em:\n{copied_path}",
+            )
+        except Exception as exc:
+            QMessageBox.critical(
+                self,
+                "Falha ao salvar arquivo",
+                f"Nao foi possivel salvar '{filename}':\n{exc}",
+            )
+
+    def export_support_package(self):
+        try:
+            base_dir = QFileDialog.getExistingDirectory(
+                self,
+                "Escolher pasta para salvar o pacote de suporte",
+                str(self._default_downloads_dir()),
+            )
+            if not base_dir:
+                return
+
+            package_dir = Path(base_dir) / "DBX-V3_Arquivos_Base"
+            package_dir.mkdir(parents=True, exist_ok=True)
+
+            copied_files = [
+                self._copy_support_file("planilha-dbx.xlsx", package_dir / "planilha-dbx.xlsx"),
+                self._copy_support_file("codigo_database.xlsx", package_dir / "codigo_database.xlsx"),
+            ]
+            instructions_path = package_dir / "INSTRUCOES_DBX-V3.txt"
+            instructions_path.write_text(self._support_instructions_text(), encoding="utf-8")
+
+            self.log_text.append(f"Pacote de suporte exportado em: {package_dir}")
+            self.statusBar().showMessage("Pacote de suporte salvo com sucesso.", 3000)
+            QMessageBox.information(
+                self,
+                "Pacote salvo",
+                "Os arquivos base foram exportados com sucesso.\n\n"
+                f"Pasta: {package_dir}\n"
+                f"Itens: {len(copied_files)} planilhas + guia de instrucoes.",
+            )
+        except Exception as exc:
+            QMessageBox.critical(
+                self,
+                "Falha ao exportar pacote",
+                f"Nao foi possivel exportar os arquivos base:\n{exc}",
+            )
+
+    def install_code_database_from_file(self):
+        try:
+            file_path, _ = QFileDialog.getOpenFileName(
+                self,
+                "Selecionar codigo_database.xlsx personalizado",
+                str(self._default_downloads_dir()),
+                "Excel Files (*.xlsx)",
+            )
+            if not file_path:
+                return
+
+            destination = Path(self.code_generator.db_path)
+            source = Path(file_path)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+
+            if source.resolve() != destination.resolve():
+                shutil.copy2(source, destination)
+
+            self.code_generator._load_database()
+            self.log_text.append(
+                f"Base de codigos instalada/atualizada em '{destination}' com prefixo atual '{self.code_generator.current_prefix}'."
+            )
+            self.statusBar().showMessage("Codigo database instalado com sucesso.", 3000)
+            QMessageBox.information(
+                self,
+                "Base instalada",
+                "O arquivo de codigos foi atualizado com sucesso.\n\n"
+                f"Prefixo atual detectado: {self.code_generator.current_prefix}\n"
+                f"Local ativo: {destination}",
+            )
+        except PermissionError:
+            QMessageBox.critical(
+                self,
+                "Arquivo em uso",
+                "Nao foi possivel instalar o codigo_database.xlsx porque ele esta aberto em outro programa.\n\n"
+                "Feche o Excel e tente novamente.",
+            )
+        except Exception as exc:
+            QMessageBox.critical(
+                self,
+                "Falha na instalacao",
+                f"Nao foi possivel instalar o codigo_database.xlsx:\n{exc}",
+            )
+
+    def open_support_data_folder(self):
+        folder_path = str(Path(self.code_generator.db_path).parent)
+        self.statusBar().showMessage("Abrindo pasta de dados da aplicacao...", 2500)
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(folder_path)):
+            QMessageBox.warning(
+                self,
+                "Pasta indisponivel",
+                f"Nao foi possivel abrir a pasta de dados:\n{folder_path}",
+            )
+
+    def show_support_files_dialog(self):
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Arquivos Base")
+        dialog.setMinimumSize(760, 540)
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(12)
+
+        title = QLabel("Baixar arquivos de suporte da aplicacao")
+        title.setStyleSheet("font-size: 12pt; font-weight: 700; color: #1caeb8;")
+        layout.addWidget(title)
+
+        intro = QLabel(
+            "Use este painel para baixar os modelos base da aplicacao, instalar uma base de codigos personalizada e consultar o modo correto de uso."
+        )
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        active_path_label = QLabel(f"Pasta ativa da aplicacao: {Path(self.code_generator.db_path).parent}")
+        active_path_label.setWordWrap(True)
+        active_path_label.setStyleSheet("font-size: 8.4pt;")
+        layout.addWidget(active_path_label)
+
+        content = QTextBrowser()
+        content.setReadOnly(True)
+        content.setOpenExternalLinks(False)
+        content.setHtml(
+            """
+            <div style="font-size: 10pt; line-height: 1.58;">
+                <p><b>Arquivos disponiveis:</b></p>
+                <ul>
+                    <li><b>planilha-dbx.xlsx</b><br/>Modelo para cadastro de pecas em lote. Preencha a planilha, salve e depois use <b>Selecionar Planilha</b> na tela principal.</li>
+                    <li><b>codigo_database.xlsx</b><br/>Base de codigos usada pelo botao <b>Gerar Codigo</b>. Para definir um prefixo personalizado, edite a celula <b>D2</b>, salve o arquivo e depois use <b>Instalar Codigo Database</b>.</li>
+                </ul>
+                <p><b>Fluxo recomendado:</b></p>
+                <ol>
+                    <li>Clique em <b>Baixar Pacote Completo</b> para receber os dois arquivos e o guia rapido.</li>
+                    <li>Edite a <b>planilha-dbx.xlsx</b> para montar o lote de pecas.</li>
+                    <li>Se quiser prefixo proprio, edite <b>D2</b> no <b>codigo_database.xlsx</b>.</li>
+                    <li>Com o Excel fechado, use <b>Instalar Codigo Database</b> para ativar a base personalizada.</li>
+                </ol>
+                <p><b>Observacao:</b> manter o arquivo aberto no Excel pode bloquear a instalacao ou a substituicao da base.</p>
+            </div>
+            """
+        )
+        layout.addWidget(content, 1)
+
+        actions_grid = QGridLayout()
+        actions_grid.setHorizontalSpacing(8)
+        actions_grid.setVerticalSpacing(8)
+
+        download_package_btn = QPushButton("Baixar Pacote Completo")
+        download_package_btn.setObjectName("primaryButton")
+        download_sheet_btn = QPushButton("Baixar Planilha de Produção")
+        download_db_btn = QPushButton("Baixar Código Database")
+        install_db_btn = QPushButton("Instalar Código Database")
+        open_data_btn = QPushButton("Abrir Pasta de Dados")
+        close_btn = QPushButton("Fechar")
+
+        download_package_btn.clicked.connect(self.export_support_package)
+        download_sheet_btn.clicked.connect(lambda: self.export_support_file("planilha-dbx.xlsx", "Planilha de Producao"))
+        download_db_btn.clicked.connect(lambda: self.export_support_file("codigo_database.xlsx", "Codigo Database"))
+        install_db_btn.clicked.connect(self.install_code_database_from_file)
+        open_data_btn.clicked.connect(self.open_support_data_folder)
+        close_btn.clicked.connect(dialog.accept)
+
+        actions_grid.addWidget(download_package_btn, 0, 0)
+        actions_grid.addWidget(download_sheet_btn, 0, 1)
+        actions_grid.addWidget(download_db_btn, 1, 0)
+        actions_grid.addWidget(install_db_btn, 1, 1)
+        actions_grid.addWidget(open_data_btn, 2, 0)
+        actions_grid.addWidget(close_btn, 2, 1)
+        layout.addLayout(actions_grid)
+
         dialog.exec_()
 
     def show_v3_features_dialog(self):
@@ -864,16 +1112,23 @@ class MainWindow(QMainWindow):
         utility_layout.setSpacing(6)
         utility_title = QLabel("DBX-V3")
         utility_title.setStyleSheet("font-size: 9pt; font-weight: 700; color: #1caeb8;")
+        self.support_files_btn = QPushButton("Arquivos Base")
         self.v3_features_btn = QPushButton("Novidades V3")
         self.about_btn = QPushButton("Sobre Nós")
         self.help_btn = QPushButton("Help")
-        for button, width in [(self.v3_features_btn, 112), (self.about_btn, 92), (self.help_btn, 72)]:
+        for button, width in [
+            (self.support_files_btn, 118),
+            (self.v3_features_btn, 112),
+            (self.about_btn, 92),
+            (self.help_btn, 72),
+        ]:
             button.setObjectName("utilityButton")
             button.setMinimumWidth(width)
             button.setMaximumWidth(width + 8)
             button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         utility_layout.addWidget(utility_title, 0, Qt.AlignVCenter)
         utility_layout.addStretch(1)
+        utility_layout.addWidget(self.support_files_btn)
         utility_layout.addWidget(self.v3_features_btn)
         utility_layout.addWidget(self.about_btn)
         utility_layout.addWidget(self.help_btn)
@@ -1200,6 +1455,7 @@ class MainWindow(QMainWindow):
 
     def connect_signals(self):
         """Método para centralizar todas as conexões de sinais e slots."""
+        self.support_files_btn.clicked.connect(self.show_support_files_dialog)
         self.v3_features_btn.clicked.connect(self.show_v3_features_dialog)
         self.about_btn.clicked.connect(self.show_about_dialog)
         self.help_btn.clicked.connect(self.show_help_dialog)
