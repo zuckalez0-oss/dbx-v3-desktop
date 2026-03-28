@@ -1,0 +1,10 @@
+﻿.venv_desktop/
+venvdb/
+__pycache__/
+*.py[cod]
+.vscode/
+.idea/
+dist/
+build/
+*.egg-info/
+debug_nesting.log

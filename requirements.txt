@@ -1,0 +1,7 @@
+pandas
+ezdxf
+reportlab
+PyQt5
+rectpack
+pywin32
+openpyxl
