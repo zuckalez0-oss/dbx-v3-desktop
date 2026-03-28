@@ -6,6 +6,8 @@ a = Analysis(
     pathex=[],
     binaries=[],
     datas=[
+        ('planilha-dbx.xlsx', '.'),
+        ('codigo_database.xlsx', '.'),
         ('desktop_app/dbx-ly.ico', 'desktop_app'),
         ('desktop_app/dbx-ly.png', 'desktop_app'),
         ('desktop_app/dbx-ly.svg', 'desktop_app'),

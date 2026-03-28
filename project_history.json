@@ -1,1 +1,46 @@
-﻿{}
+{
+    "1234": {
+        "project_number": "1234",
+        "save_date": "28/03/2026 16:46:40",
+        "pieces": [
+            {
+                "nome_arquivo": "DES2",
+                "forma": "rectangle",
+                "espessura": 2.0,
+                "qtd": 10.0,
+                "largura": 1222.0,
+                "altura": 12222.0,
+                "diametro": 0.0,
+                "rt_base": 0.0,
+                "rt_height": 0.0,
+                "trapezoid_large_base": 0.0,
+                "trapezoid_small_base": 0.0,
+                "trapezoid_height": 0.0,
+                "furos": [
+                    {
+                        "diam": 15.0,
+                        "x": 35.0,
+                        "y": 35.0
+                    },
+                    {
+                        "diam": 15.0,
+                        "x": 1187.0,
+                        "y": 35.0
+                    },
+                    {
+                        "diam": 15.0,
+                        "x": 1187.0,
+                        "y": 12187.0
+                    },
+                    {
+                        "diam": 15.0,
+                        "x": 35.0,
+                        "y": 12187.0
+                    }
+                ],
+                "dxf_path": 0.0,
+                "project_number": "1234"
+            }
+        ]
+    }
+}

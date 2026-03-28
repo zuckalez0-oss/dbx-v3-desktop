@@ -3,14 +3,15 @@
 import pandas as pd
 from datetime import datetime
 from openpyxl import load_workbook, Workbook
+from app_paths import ensure_user_file
 
 class CodeGenerator:
     """
     Gerencia a criação e persistência de códigos únicos para as peças.
     Interage com uma planilha Excel como banco de dados.
     """
-    def __init__(self, db_path="codigo_database.xlsx", error_notifier=None):
-        self.db_path = db_path
+    def __init__(self, db_path=None, error_notifier=None):
+        self.db_path = db_path or ensure_user_file("codigo_database.xlsx")
         self.error_notifier = error_notifier
         self.code_column_name = 'Codigo Unico'
         self.timestamp_column_name = 'Data de Registro'

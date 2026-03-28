@@ -1,13 +1,36 @@
 import rectpack
 import logging
+import tempfile
 from rectpack.maxrects import MaxRectsBssf, MaxRectsBaf, MaxRectsBlsf, MaxRectsBl
 from rectpack.skyline import SkylineBl, SkylineBlWm, SkylineMwf, SkylineMwfl
 import math
 import os
+from app_paths import get_log_file_path
 
 # --- INÍCIO: CONFIGURAÇÃO DE LOGGING PARA DEBUG ---
-logging.basicConfig(filename='debug_nesting.log', level=logging.WARNING, 
-                    format='%(asctime)s - %(levelname)s - %(message)s', filemode='w')
+def _configure_logging():
+    log_paths = [
+        get_log_file_path("debug_nesting.log"),
+        os.path.join(tempfile.gettempdir(), "dbx-v3-desktop-debug_nesting.log"),
+    ]
+
+    for log_path in log_paths:
+        try:
+            logging.basicConfig(
+                filename=log_path,
+                level=logging.WARNING,
+                format='%(asctime)s - %(levelname)s - %(message)s',
+                filemode='w',
+                encoding='utf-8',
+            )
+            return
+        except OSError:
+            continue
+
+    logging.basicConfig(level=logging.CRITICAL)
+
+
+_configure_logging()
 # --- FIM: CONFIGURAÇÃO DE LOGGING ---
 
 # --- INÍCIO: CLASSE PARA EMITIR SINAIS DE STATUS ---

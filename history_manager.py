@@ -2,13 +2,15 @@
 
 import json
 from datetime import datetime
+from pathlib import Path
+from app_paths import ensure_user_file
 
 class HistoryManager:
     """
     Gerencia o histórico de projetos, salvando e carregando dados de um arquivo JSON.
     """
-    def __init__(self, history_path="project_history.json"):
-        self.history_path = history_path
+    def __init__(self, history_path=None):
+        self.history_path = history_path or ensure_user_file("project_history.json", default_text="{}")
 
     def _load_history(self):
         try:
@@ -18,6 +20,7 @@ class HistoryManager:
             return {}
 
     def _save_history(self, history_data):
+        Path(self.history_path).parent.mkdir(parents=True, exist_ok=True)
         with open(self.history_path, 'w', encoding='utf-8') as f:
             json.dump(history_data, f, indent=4)
 

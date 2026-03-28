@@ -9,6 +9,7 @@ import pandas as pd
 import time
 import unicodedata
 from pathlib import Path
+from app_paths import find_resource_path
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QPushButton, QLabel, QTextEdit, 
                              QFileDialog, QProgressBar, QMessageBox, QGroupBox,
@@ -1453,12 +1454,12 @@ class MainWindow(QMainWindow):
         QApplication.processEvents()
 
         try:
-            template_path = 'planilha-dbx.xlsx'
-            if os.path.exists(template_path):
-                wb = load_workbook(template_path)
+            template_path = find_resource_path("planilha-dbx.xlsx")
+            if template_path is not None:
+                wb = load_workbook(str(template_path))
                 ws = wb.active
             else:
-                self.log_text.append(f"Template '{template_path}' não encontrado. Criando nova planilha estruturada.")
+                self.log_text.append("Template 'planilha-dbx.xlsx' nao encontrado. Criando nova planilha estruturada.")
                 wb = Workbook()
                 ws = wb.active
                 ws.title = "PEÇAS PADRÃO"
