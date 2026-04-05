@@ -1,18 +1,32 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+from pathlib import Path
+
+
+legacy_budget_template = None
+for suffix in ('.xlsm', '.xlsx'):
+    candidate = Path(f'CUSTO_PLASMA-LASER_V22_Definitiva-antigaa{suffix}')
+    if candidate.exists():
+        legacy_budget_template = (str(candidate), '.')
+        break
+
+datas = [
+    ('planilha_orcamento_laser_plasma_ref_Rev1.xlsm', '.'),
+    ('planilha-dbx.xlsx', '.'),
+    ('codigo_database.xlsx', '.'),
+    ('desktop_app/dbx-ly.ico', 'desktop_app'),
+    ('desktop_app/dbx-ly.png', 'desktop_app'),
+    ('desktop_app/dbx-ly.svg', 'desktop_app'),
+    ('desktop_app/lyps-v22-tm2-svg.png', 'desktop_app'),
+]
+if legacy_budget_template is not None:
+    datas.append(legacy_budget_template)
 
 a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
-    datas=[
-        ('planilha-dbx.xlsx', '.'),
-        ('codigo_database.xlsx', '.'),
-        ('desktop_app/dbx-ly.ico', 'desktop_app'),
-        ('desktop_app/dbx-ly.png', 'desktop_app'),
-        ('desktop_app/dbx-ly.svg', 'desktop_app'),
-        ('desktop_app/lyps-v22-tm2-svg.png', 'desktop_app'),
-    ],
+    datas=datas,
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

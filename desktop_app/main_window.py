@@ -38,6 +38,7 @@ from dxf_engine import get_dxf_bounding_box #importar funcao de dxf_engine
 from calculo_cortes import orquestrar_planos_de_corte
 
 LYPSYOS_WEBSITE_URL = os.environ.get("LYPSYOS_SITE_URL", "https://lypsyos.com")
+LEGACY_BUDGET_TEMPLATE_NAME = "CUSTO_PLASMA-LASER_V22_Definitiva-antigaa"
 
 
 def desktop_asset_path(*parts):
@@ -1679,6 +1680,217 @@ class MainWindow(QMainWindow):
                 return None
         return None
 
+    def _build_worksheet_header_map(self, worksheet, header_row):
+        header_map = {}
+        for column_idx in range(1, worksheet.max_column + 1):
+            header_value = worksheet.cell(row=header_row, column=column_idx).value
+            normalized_header = self._normalize_text_key(header_value)
+            if normalized_header:
+                header_map[normalized_header] = column_idx
+        return header_map
+
+    def _resolve_template_column(self, header_map, alias_name, alias_map=None):
+        alias_map = alias_map or {}
+        target_header = alias_map.get(alias_name, alias_name)
+        normalized_header = self._normalize_text_key(target_header)
+        column_idx = header_map.get(normalized_header)
+        if column_idx is None:
+            raise KeyError(f"Cabeçalho '{target_header}' nao encontrado no template.")
+        return column_idx
+
+    def _set_template_value(self, worksheet, header_map, row_number, alias_name, value, alias_map=None):
+        column_idx = self._resolve_template_column(header_map, alias_name, alias_map)
+        worksheet.cell(row=row_number, column=column_idx, value=value)
+
+    def _get_budget_template_piece_dimensions(self, row_data):
+        piece_shape = str(row_data.get('forma', '')).lower()
+        if piece_shape == 'circle':
+            return row_data.get('diametro', 0), None, None
+        if piece_shape == 'right_triangle':
+            return row_data.get('rt_base', 0), row_data.get('rt_height', 0), None
+        if piece_shape == 'trapezoid':
+            return (
+                row_data.get('trapezoid_large_base', 0),
+                row_data.get('trapezoid_small_base', 0),
+                row_data.get('trapezoid_height', 0),
+            )
+        return row_data.get('largura', 0), row_data.get('altura', 0), None
+
+    def _get_budget_template_piece_type(self, row_data):
+        piece_shape = str(row_data.get('forma', '')).lower()
+        if piece_shape == 'circle':
+            return 'C'
+        if piece_shape == 'trapezoid':
+            return 'TP'
+        if piece_shape == 'right_triangle':
+            return 'T'
+        if piece_shape == 'rectangle':
+            width_value = row_data.get('largura', 0)
+            height_value = row_data.get('altura', 0)
+            return 'Q' if width_value == height_value and width_value else 'R'
+        if piece_shape == 'dxf_shape':
+            return 'R'
+        return ''
+
+    def _find_legacy_budget_template_path(self):
+        candidate_filenames = [
+            f"{LEGACY_BUDGET_TEMPLATE_NAME}.xlsm",
+            f"{LEGACY_BUDGET_TEMPLATE_NAME}.xlsx",
+            "planilha-dbx.xlsx",
+        ]
+        for candidate_filename in candidate_filenames:
+            candidate_path = find_resource_path(candidate_filename)
+            if candidate_path is not None:
+                return Path(candidate_path)
+        return None
+
+    def _build_dual_export_paths(self, selected_path, new_template_path, legacy_template_path):
+        selected_export_path = Path(selected_path)
+        excel_suffixes = {".xlsx", ".xlsm", ".xls"}
+        base_export_path = (
+            selected_export_path.with_suffix("")
+            if selected_export_path.suffix.lower() in excel_suffixes
+            else selected_export_path
+        )
+
+        new_suffix = new_template_path.suffix.lower() if new_template_path is not None else ".xlsx"
+        legacy_suffix = legacy_template_path.suffix.lower() if legacy_template_path is not None else ".xlsx"
+
+        return (
+            base_export_path.with_name(f"{base_export_path.name}_layout-novo{new_suffix}"),
+            base_export_path.with_name(f"{base_export_path.name}_layout-antigo{legacy_suffix}"),
+        )
+
+    def _load_legacy_budget_template(self, template_path):
+        if template_path is not None:
+            keep_vba = template_path.suffix.lower() == ".xlsm"
+            workbook = load_workbook(str(template_path), keep_vba=keep_vba)
+            worksheet = workbook["PEÇAS PADRÃO"] if "PEÇAS PADRÃO" in workbook.sheetnames else workbook.active
+            return workbook, worksheet
+
+        self.log_text.append(
+            "Template do layout antigo nao encontrado. Criando planilha estruturada para o layout antigo."
+        )
+        workbook = Workbook()
+        worksheet = workbook.active
+        worksheet.title = "PEÇAS PADRÃO"
+
+        headers = [
+            "ID do Cliente", "ID Noroaco", "QTD de Pecas", "TIPO PEÇA", "Nº FUROS", "DIAMETRO FURO",
+            "ESPESSURA", "DIMENSÃO (A)mm", "DIMENSÃO (B)mm", "DIMENSÃO (C)mm",
+            " MATERIA PRIMA LARGURA CHAPA mm", "Kg", "Kg Total", "Tempo", "Preço por Peça (Individual)",
+            "Total", "MÁQ", "MARGEM", "REGRA", "Sobra?", "Valor Sugerido (KG)",
+            "Calculo Considerando Margem 30%", "Calculo sem Considerar Margem 30%", "multiplicacao CUSTO",
+            "Prod por Min", "Forma de Desenho", "Custo Máq", "PREÇO M.P", "Imposto", "Comissão",
+            "Frete", "Perda", "Margem", "Veloc teorica", "Fator chapa / sucata", "Tempo corte min",
+            "Fator furo (min)", "Fator peças"
+        ]
+
+        worksheet["A1"] = "Imposto"
+        worksheet["B1"] = "Comissão"
+        worksheet["C1"] = "Frete"
+        worksheet["E1"] = "preco por kg"
+        worksheet["F1"] = "Tipo do Aço"
+
+        for column_index, header in enumerate(headers, 1):
+            worksheet.cell(row=3, column=column_index, value=header).font = Font(bold=True)
+
+        return workbook, worksheet
+
+    def _export_project_to_budget_template(self, template_path, save_path, combined_df, project_number, params):
+        workbook = load_workbook(str(template_path), keep_vba=True)
+        worksheet = workbook["PEÇAS"] if "PEÇAS" in workbook.sheetnames else workbook.active
+
+        meta_aliases = {
+            "IMP": "IMP",
+            "FRETE": "FRETE",
+        }
+        meta_header_map = self._build_worksheet_header_map(worksheet, 1)
+
+        try:
+            imposto_val = float(self.imposto_input.text().replace(',', '.'))
+            frete_val = float(self.frete_input.text().replace(',', '.'))
+        except ValueError:
+            raise ValueError("Valores de Imposto e Frete devem ser numéricos.")
+
+        self._set_template_value(worksheet, meta_header_map, 2, "IMP", imposto_val, meta_aliases)
+        self._set_template_value(worksheet, meta_header_map, 2, "FRETE", frete_val, meta_aliases)
+        self.log_text.append("Parâmetros do topo da planilha atualizados por cabeçalho.")
+
+        data_aliases = {
+            "ID_CLIENT": "ID_CLIENT",
+            "ID": "ID_NOROACO",
+            "QTD": "QTD",
+            "TIPO_PECA": "TIPO_PEÇA",
+            "N_FUROS": "N_FUROS",
+            "DIA_FURO": "DIA_FURO",
+            "ESP": "ESP",
+            "DIM_A": "DIM_A",
+            "DIM_B": "DIM_B",
+            "DIM_C": "DIM_C",
+            "LARG_MP": "LARG_MP",
+        }
+        header_row = 13
+        data_start_row = 14
+        data_end_row = max(55, worksheet.max_row - 1)
+        data_header_map = self._build_worksheet_header_map(worksheet, header_row)
+
+        available_rows = data_end_row - data_start_row + 1
+        records = combined_df.to_dict('records')
+        total_records = len(records)
+        if total_records > available_rows:
+            raise ValueError(
+                f"A nova planilha suporta {available_rows} peça(s) por aba e o projeto atual possui {total_records}."
+            )
+
+        input_aliases = list(data_aliases.keys())
+        input_columns = [
+            self._resolve_template_column(data_header_map, alias_name, data_aliases)
+            for alias_name in input_aliases
+        ]
+        for row_number in range(data_start_row, data_end_row + 1):
+            for column_idx in input_columns:
+                worksheet.cell(row=row_number, column=column_idx, value=None)
+
+        project_value = project_number
+        for index, row_data in enumerate(records):
+            current_row = data_start_row + index
+            dim_a, dim_b, dim_c = self._get_budget_template_piece_dimensions(row_data)
+            holes_list = row_data.get('furos', [])
+            holes_count = len(holes_list) if isinstance(holes_list, list) else 0
+            first_hole_diameter = holes_list[0].get('diam', 0) if holes_count else None
+
+            row_payload = {
+                "ID_CLIENT": project_value,
+                "ID": row_data.get('nome_arquivo', ''),
+                "QTD": row_data.get('qtd', 0),
+                "TIPO_PECA": self._get_budget_template_piece_type(row_data),
+                "N_FUROS": holes_count,
+                "DIA_FURO": first_hole_diameter,
+                "ESP": row_data.get('espessura', 0),
+                "DIM_A": dim_a,
+                "DIM_B": dim_b,
+                "DIM_C": dim_c,
+                "LARG_MP": params["chapa_largura"],
+            }
+
+            for alias_name, alias_value in row_payload.items():
+                self._set_template_value(
+                    worksheet,
+                    data_header_map,
+                    current_row,
+                    alias_name,
+                    alias_value,
+                    data_aliases,
+                )
+
+            if index % 10 == 0 or index == total_records - 1:
+                self.progress_bar.setValue(int(((index + 1) / max(total_records, 1)) * 100))
+                QApplication.processEvents()
+
+        workbook.save(str(save_path))
+        return save_path
+
     def export_project_to_excel(self):
         params = self._get_export_parameters()
         if not params: return
@@ -1694,10 +1906,22 @@ class MainWindow(QMainWindow):
             return
         combined_df = pd.concat(dfs_to_concat, ignore_index=True)
 
-        default_filename = os.path.join(self.project_directory, f"Relacao-de-peças-projeto_{project_number}.xlsx")
-        save_path, _ = QFileDialog.getSaveFileName(self, "Salvar Resumo do Projeto", default_filename, "Excel Files (*.xlsx)")
-        if not save_path:
+        budget_template_path = find_resource_path("planilha_orcamento_laser_plasma_ref_Rev1.xlsm")
+        legacy_template_path = self._find_legacy_budget_template_path()
+        default_filename = os.path.join(self.project_directory, f"Relacao-de-pecas-projeto_{project_number}")
+        selected_save_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Salvar Resumo do Projeto",
+            default_filename,
+            "Excel Files (*.xlsx *.xlsm)",
+        )
+        if not selected_save_path:
             return
+        new_output_path, legacy_output_path = self._build_dual_export_paths(
+            selected_save_path,
+            Path(budget_template_path) if budget_template_path is not None else None,
+            legacy_template_path,
+        )
 
         start_time = time.time()
         os.environ['CURRENT_PROJECT_NAME'] = project_number
@@ -1710,91 +1934,83 @@ class MainWindow(QMainWindow):
         QApplication.processEvents()
 
         try:
-            template_path = find_resource_path("planilha-dbx.xlsx")
-            if template_path is not None:
-                wb = load_workbook(str(template_path))
-                ws = wb.active
+            exported_paths = []
+
+            if budget_template_path is not None:
+                self.log_text.append("Nova planilha de orcamento detectada. Aplicando remapeamento por cabecalho.")
+                self._export_project_to_budget_template(
+                    Path(budget_template_path),
+                    new_output_path,
+                    combined_df,
+                    project_number,
+                    params,
+                )
+                exported_paths.append(str(new_output_path))
+                self.log_text.append(f"Layout novo salvo com sucesso em: {new_output_path}")
             else:
-                self.log_text.append("Template 'planilha-dbx.xlsx' nao encontrado. Criando nova planilha estruturada.")
-                wb = Workbook()
-                ws = wb.active
-                ws.title = "PEÇAS PADRÃO"
-                
-                headers = [
-                    "ID do Cliente", "ID Noroaco", "QTD de Pecas", "TIPO PEÇA", "Nº FUROS", "DIAMETRO FURO", 
-                    "ESPESSURA", "DIMENSÃO (A)mm", "DIMENSÃO (B)mm", "DIMENSÃO (C)mm", 
-                    " MATERIA PRIMA LARGURA CHAPA mm", "Kg", "Kg Total", "Tempo", "Preço por Peça (Individual)", 
-                    "Total", "MÁQ", "MARGEM", "REGRA", "Sobra?", "Valor Sugerido (KG)", 
-                    "Calculo Considerando Margem 30%", "Calculo sem Considerar Margem 30%", "multiplicacao CUSTO", 
-                    "Prod por Min", "Forma de Desenho", "Custo Máq", "PREÇO M.P", "Imposto", "Comissão", 
-                    "Frete", "Perda", "Margem", "Veloc teorica", "Fator chapa / sucata", "Tempo corte min", 
-                    "Fator furo (min)", "Fator peças"
-                ]
-                
-                ws['A1'] = "Imposto (%)"
-                ws['C1'] = "Frete (R$)"
-                
-                for i, header in enumerate(headers, 1):
-                    ws.cell(row=3, column=i, value=header).font = Font(bold=True)
+                self.log_text.append("AVISO: template do layout novo nao encontrado. Exportacao do layout novo foi pulada.")
+
+            self.log_text.append("Gerando layout antigo do orçamento...")
+            wb, ws = self._load_legacy_budget_template(legacy_template_path)
 
             try:
                 imposto_val = float(self.imposto_input.text().replace(',', '.'))
                 frete_val = float(self.frete_input.text().replace(',', '.'))
                 ws['A2'] = imposto_val
                 ws['C2'] = frete_val
-                self.log_text.append(f"Imposto ({imposto_val}) e Frete ({frete_val}) preenchidos nas células A2 e C2.")
+                self.log_text.append(
+                    f"Layout antigo: Imposto ({imposto_val}) e Frete ({frete_val}) preenchidos nas células A2 e C2."
+                )
             except ValueError:
                 QMessageBox.warning(self, "Valor Inválido", "Valores de Imposto e Frete devem ser numéricos. Usando 0.")
                 ws['A2'] = 0
                 ws['C2'] = 0
 
-            self.log_text.append("Preenchendo lista de peças...")
+            self.log_text.append("Layout antigo: preenchendo lista de peças...")
             QApplication.processEvents()
             
-            start_row = 4 
-            last_filled_row = start_row - 1 
-
-
+            start_row = 4
+            end_row = 207
+            last_filled_row = start_row - 1
             todas_as_sobras_aproveitaveis = []
 
-            # OTIMIZACAO: Converter para lista de dicionários é muito mais rápido que iterrows()
             records = combined_df.to_dict('records')
             total_records = len(records)
-            
+            available_rows = end_row - start_row + 1
+            if total_records > available_rows:
+                raise ValueError(
+                    f"O layout antigo suporta {available_rows} peça(s) e o projeto atual possui {total_records}."
+                )
+
+            for row_number in range(start_row, end_row + 1):
+                for column_idx in range(1, 12):
+                    ws.cell(row=row_number, column=column_idx, value=None)
+
             for index, row_data in enumerate(records):
                 current_row = start_row + index
-                last_filled_row = current_row 
-                
+                last_filled_row = current_row
+                dim_a, dim_b, dim_c = self._get_budget_template_piece_dimensions(row_data)
+                num_furos_data = row_data.get('furos', [])
+                num_furos = len(num_furos_data) if isinstance(num_furos_data, list) else 0
+                primeiro_furo = num_furos_data[0].get('diam', 0) if num_furos > 0 else None
+
                 ws.cell(row=current_row, column=1, value=project_number)
                 ws.cell(row=current_row, column=2, value=row_data.get('nome_arquivo', ''))
-                
-                qtd_peca = row_data.get('qtd', 0)
-                ws.cell(row=current_row, column=3, value=qtd_peca)
-                
-                forma = str(row_data.get('forma', '')).lower()
-                largura, altura = row_data.get('largura', 0), row_data.get('altura', 0)
-                forma_map = {'circle': 'C', 'trapezoid': 'TP', 'right_triangle': 'T'}
-                forma_abreviada = 'Q' if forma == 'rectangle' and largura == altura and largura > 0 else forma_map.get(forma, 'R' if forma == 'rectangle' else '')
-                ws.cell(row=current_row, column=4, value=forma_abreviada)
-
-                furos = row_data.get('furos', [])
-                num_furos = len(furos) if isinstance(furos, list) else 0
+                ws.cell(row=current_row, column=3, value=row_data.get('qtd', 0))
+                ws.cell(row=current_row, column=4, value=self._get_budget_template_piece_type(row_data))
                 ws.cell(row=current_row, column=5, value=num_furos)
-                ws.cell(row=current_row, column=6, value=furos[0].get('diam', 0) if num_furos > 0 else 0)
-                
+                ws.cell(row=current_row, column=6, value=primeiro_furo)
+                ws.cell(row=current_row, column=7, value=row_data.get('espessura', 0))
+                ws.cell(row=current_row, column=8, value=dim_a)
+                ws.cell(row=current_row, column=9, value=dim_b)
+                ws.cell(row=current_row, column=10, value=dim_c)
+                ws.cell(row=current_row, column=11, value=params["chapa_largura"])
 
-                espessura_peca = row_data.get('espessura', 0)
-                ws.cell(row=current_row, column=7, value=espessura_peca) 
-                
-                ws.cell(row=current_row, column=8, value=largura)
-                ws.cell(row=current_row, column=9, value=altura)
-                
-                # OTIMIZACAO: Atualizar UI apenas a cada 10 itens para não travar o processamento
                 if index % 10 == 0 or index == total_records - 1:
-                    self.progress_bar.setValue(int(((index + 1) / (total_records * 2)) * 100))
+                    self.progress_bar.setValue(int(((index + 1) / max(total_records * 2, 1)) * 100))
                     QApplication.processEvents()
 
-            self.log_text.append("Calculando aproveitamento de chapas...")
+            self.log_text.append("Layout antigo: calculando aproveitamento de chapas...")
             QApplication.processEvents()
 
             valid_nesting_df = combined_df[combined_df['forma'].isin(['rectangle', 'circle', 'right_triangle', 'trapezoid', 'dxf_shape'])].copy()
@@ -1961,7 +2177,7 @@ class MainWindow(QMainWindow):
             is_special_material = any(keyword in project_name_upper for keyword in ['FF', 'GALV', 'XADREZ'])
 
             if is_special_material and todas_as_sobras_aproveitaveis:
-                self.log_text.append("Material especial detectado. Adicionando sobras aproveitáveis à lista de peças...")
+                self.log_text.append("Layout antigo: material especial detectado. Adicionando sobras aproveitáveis à lista de peças...")
                 QApplication.processEvents()
 
                 sobras_agrupadas = {}
@@ -1984,27 +2200,29 @@ class MainWindow(QMainWindow):
                     ws.cell(row=last_filled_row, column=7, value=sobra_agrupada['espessura']) # Espessura
                     ws.cell(row=last_filled_row, column=8, value=sobra_agrupada['largura']) # Largura
                     ws.cell(row=last_filled_row, column=9, value=sobra_agrupada['altura']) # Altura
+                    ws.cell(row=last_filled_row, column=10, value=None)
+                    ws.cell(row=last_filled_row, column=11, value=params["chapa_largura"])
 
                 start_hide_row = last_filled_row + 1
-                end_hide_row = 207 
+                end_hide_row = end_row
                 if start_hide_row <= end_hide_row:
                     ws.row_dimensions.group(start_hide_row, end_hide_row, hidden=True)
-                    self.log_text.append(f"Linhas de {start_hide_row} a {end_hide_row} re-ocultadas.")
+                    self.log_text.append(f"Layout antigo: linhas de {start_hide_row} a {end_hide_row} re-ocultadas.")
             else:
                 if not is_special_material:
-                    self.log_text.append("Projeto não é de material especial. Sobras não serão adicionadas à planilha.")
+                    self.log_text.append("Layout antigo: projeto nao e de material especial. Sobras nao serao adicionadas a planilha.")
 
 
             if total_pecas_contadas_real > 0:
                 avg_loss_real = total_perca_ponderada_real / total_pecas_contadas_real if total_pecas_contadas_real > 0 else 0
 
                 ws['D2'] = avg_loss_real / 100.0 
-                self.log_text.append(f"Perca média ponderada REAL ({avg_loss_real:.2f}%) preenchida em D2.")
+                self.log_text.append(f"Layout antigo: perca media ponderada REAL ({avg_loss_real:.2f}%) preenchida em D2.")
             else:
                 ws['D2'] = 0
-                self.log_text.append("Nenhuma peça para calcular perca real. Preenchido 0 em D2.")
+                self.log_text.append("Layout antigo: nenhuma peca para calcular perca real. Preenchido 0 em D2.")
 
-            self.log_text.append("Atualizando tabela de perdas (Coluna W) com resultados do nesting...")
+            self.log_text.append("Layout antigo: atualizando tabela de perdas (coluna W) com resultados do nesting...")
 
             perda_map_arredondado = {round(float(k), 2): v for k, v in perda_results_map.items()}
       
@@ -2012,7 +2230,10 @@ class MainWindow(QMainWindow):
             num_rows = 25
             end_row_exclusive = start_row + num_rows 
             
-            self.log_text.append(f"Atualizando {num_rows} linhas da tabela de perdas (V{start_row}:W{end_row_exclusive - 1})...")
+            self.log_text.append(
+                f"Layout antigo: atualizando {num_rows} linhas da tabela de perdas "
+                f"(V{start_row}:W{end_row_exclusive - 1})..."
+            )
 
  
             for row_idx in range(start_row, end_row_exclusive):  
@@ -2041,7 +2262,7 @@ class MainWindow(QMainWindow):
                         
                 except (ValueError, TypeError):
 
-                    self.log_text.append(f"AVISO: Valor não numérico na célula V{row_idx}: '{esp_cell.value}'. Deixando em branco.")
+                    self.log_text.append(f"AVISO: Valor nao numerico na celula V{row_idx}: '{esp_cell.value}'. Deixando em branco.")
                     ws.cell(row=row_idx, column=23, value=None)
                     continue
 
@@ -2049,25 +2270,31 @@ class MainWindow(QMainWindow):
             try:
 
                 start_hide_row = last_filled_row + 1
-                end_hide_row = 207 
+                end_hide_row = end_row
                 
                 if start_hide_row <= end_hide_row:
 
                     ws.row_dimensions.group(start_hide_row, end_hide_row, hidden=True)
-                    self.log_text.append(f"Linhas da {start_hide_row} até {end_hide_row} ocultadas com sucesso.")
+                    self.log_text.append(f"Layout antigo: linhas da {start_hide_row} ate {end_hide_row} ocultadas com sucesso.")
                 else:
 
-                    self.log_text.append(f"Nenhuma linha para ocultar (Última linha preenchida: {last_filled_row}).")
+                    self.log_text.append(f"Layout antigo: nenhuma linha para ocultar (ultima linha preenchida: {last_filled_row}).")
             except Exception as e:
-                self.log_text.append(f"AVISO: Falha ao ocultar linhas. {e}")
+                self.log_text.append(f"AVISO: Layout antigo falhou ao ocultar linhas. {e}")
 
-            self.log_text.append("Salvando arquivo Excel...")
+            self.log_text.append("Layout antigo: salvando arquivo Excel...")
             QApplication.processEvents()
-            wb.save(save_path)
+            wb.save(legacy_output_path)
+            exported_paths.append(str(legacy_output_path))
             self.progress_bar.setValue(100)
-            self.log_text.append(f"Resumo do projeto salvo com sucesso em: {save_path}")
-            QMessageBox.information(self, "Sucesso", f"O arquivo Excel foi salvo com sucesso em:\n{save_path}")
-            #self._generate_pdf_from_excel(save_path, len(combined_df))
+            self.log_text.append("Arquivos Excel gerados com sucesso:")
+            for exported_path in exported_paths:
+                self.log_text.append(f"- {exported_path}")
+            QMessageBox.information(
+                self,
+                "Sucesso",
+                "Os arquivos Excel foram salvos com sucesso em:\n\n" + "\n".join(exported_paths),
+            )
         except Exception as e:
             self.log_text.append(f"ERRO ao exportar para Excel: {e}")
             QMessageBox.critical(self, "Erro na Exportação", f"Ocorreu um erro ao salvar o arquivo:\n{e}")
