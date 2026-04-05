@@ -1797,9 +1797,17 @@ class MainWindow(QMainWindow):
 
         return workbook, worksheet
 
+    def _ensure_export_worksheet_visible(self, workbook, worksheet):
+        worksheet.sheet_state = "visible"
+        workbook.active = workbook.sheetnames.index(worksheet.title)
+
+    def _get_material_sheet_width(self, params):
+        return min(float(params["chapa_largura"]), float(params["chapa_altura"]))
+
     def _export_project_to_budget_template(self, template_path, save_path, combined_df, project_number, params):
         workbook = load_workbook(str(template_path), keep_vba=True)
         worksheet = workbook["PEÇAS"] if "PEÇAS" in workbook.sheetnames else workbook.active
+        self._ensure_export_worksheet_visible(workbook, worksheet)
 
         meta_aliases = {
             "IMP": "IMP",
@@ -1852,6 +1860,7 @@ class MainWindow(QMainWindow):
             for column_idx in input_columns:
                 worksheet.cell(row=row_number, column=column_idx, value=None)
 
+        material_sheet_width = self._get_material_sheet_width(params)
         project_value = project_number
         for index, row_data in enumerate(records):
             current_row = data_start_row + index
@@ -1871,7 +1880,7 @@ class MainWindow(QMainWindow):
                 "DIM_A": dim_a,
                 "DIM_B": dim_b,
                 "DIM_C": dim_c,
-                "LARG_MP": params["chapa_largura"],
+                "LARG_MP": material_sheet_width,
             }
 
             for alias_name, alias_value in row_payload.items():
@@ -1883,6 +1892,8 @@ class MainWindow(QMainWindow):
                     alias_value,
                     data_aliases,
                 )
+
+            worksheet.row_dimensions[current_row].hidden = False
 
             if index % 10 == 0 or index == total_records - 1:
                 self.progress_bar.setValue(int(((index + 1) / max(total_records, 1)) * 100))
@@ -1952,6 +1963,7 @@ class MainWindow(QMainWindow):
 
             self.log_text.append("Gerando layout antigo do orçamento...")
             wb, ws = self._load_legacy_budget_template(legacy_template_path)
+            self._ensure_export_worksheet_visible(wb, ws)
 
             try:
                 imposto_val = float(self.imposto_input.text().replace(',', '.'))
@@ -1986,6 +1998,7 @@ class MainWindow(QMainWindow):
                 for column_idx in range(1, 12):
                     ws.cell(row=row_number, column=column_idx, value=None)
 
+            material_sheet_width = self._get_material_sheet_width(params)
             for index, row_data in enumerate(records):
                 current_row = start_row + index
                 last_filled_row = current_row
@@ -2004,7 +2017,7 @@ class MainWindow(QMainWindow):
                 ws.cell(row=current_row, column=8, value=dim_a)
                 ws.cell(row=current_row, column=9, value=dim_b)
                 ws.cell(row=current_row, column=10, value=dim_c)
-                ws.cell(row=current_row, column=11, value=params["chapa_largura"])
+                ws.cell(row=current_row, column=11, value=material_sheet_width)
 
                 if index % 10 == 0 or index == total_records - 1:
                     self.progress_bar.setValue(int(((index + 1) / max(total_records * 2, 1)) * 100))
@@ -2201,7 +2214,7 @@ class MainWindow(QMainWindow):
                     ws.cell(row=last_filled_row, column=8, value=sobra_agrupada['largura']) # Largura
                     ws.cell(row=last_filled_row, column=9, value=sobra_agrupada['altura']) # Altura
                     ws.cell(row=last_filled_row, column=10, value=None)
-                    ws.cell(row=last_filled_row, column=11, value=params["chapa_largura"])
+                    ws.cell(row=last_filled_row, column=11, value=material_sheet_width)
 
                 start_hide_row = last_filled_row + 1
                 end_hide_row = end_row
