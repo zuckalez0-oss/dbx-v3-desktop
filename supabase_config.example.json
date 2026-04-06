@@ -1,0 +1,11 @@
+{
+  "supabase_url": "https://SEU-PROJETO.supabase.co",
+  "supabase_anon_key": "COLE_A_ANON_KEY_AQUI",
+  "profiles_table": "profiles",
+  "profile_lookup_column": "id",
+  "require_dbx_access_claim": true,
+  "require_profile": false,
+  "desktop_access_column": "desktop_access",
+  "status_column": "status",
+  "allowed_statuses": ["active", "trial"]
+}

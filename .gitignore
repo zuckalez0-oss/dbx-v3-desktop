@@ -8,3 +8,4 @@ dist/
 build/
 *.egg-info/
 debug_nesting.log
+desktop_app/auth/supabase_config.json

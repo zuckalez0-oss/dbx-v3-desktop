@@ -5,3 +5,4 @@ PyQt5
 rectpack
 pywin32
 openpyxl
+supabase

@@ -18,7 +18,7 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QTableWidgetItem, QDialog, QInputDialog, QHeaderView,
                              QSplitter, QDialogButtonBox, QSizePolicy, QScrollArea,
                              QFrame, QGridLayout, QTextBrowser) #importacao do pyqt5
-from PyQt5.QtCore import Qt, QUrl
+from PyQt5.QtCore import Qt, QUrl, pyqtSignal
 from PyQt5.QtGui import QIcon, QDesktopServices, QPixmap
 try:
     import win32com.client
@@ -109,6 +109,23 @@ QPushButton#utilityButton:hover {
 }
 QPushButton#utilityButton:pressed {
     background-color: #DDEFF1;
+}
+QPushButton#dangerUtilityButton {
+    background-color: #fff0f0;
+    color: #9d1f1f;
+    border: 1px solid #efc7c7;
+    border-radius: 7px;
+    padding: 3px 10px;
+    min-height: 22px;
+    max-height: 24px;
+    font-size: 8.4pt;
+}
+QPushButton#dangerUtilityButton:hover {
+    background-color: #f9dddd;
+    border: 1px solid #df9d9d;
+}
+QPushButton#dangerUtilityButton:pressed {
+    background-color: #f2c9c9;
 }
 
 /* Contêineres como GroupBox e Tabelas */
@@ -390,13 +407,17 @@ QScrollBar::add-line, QScrollBar::sub-line { border: none; background: none; }
 """
 
 class MainWindow(QMainWindow):
-    def __init__(self):
+    logout_requested = pyqtSignal()
+
+    def __init__(self, auth_context=None, auth_service=None):
         super().__init__()
         self.setWindowTitle("Gerador de Desenhos Técnicos e DXF - DBX V3")
         self.setGeometry(100, 100, 1280, 850) 
         self.setMinimumSize(1024, 720)
         self._apply_window_icon()
 
+        self.auth_context = auth_context
+        self.auth_service = auth_service
         self.code_generator = CodeGenerator(error_notifier=self._handle_code_generator_error)
         self.history_manager = HistoryManager()
         self.is_dark_theme = False 
@@ -415,6 +436,7 @@ class MainWindow(QMainWindow):
         
         self.set_initial_button_state()
         self.update_dimension_fields(self.forma_combo.currentText())
+        self._update_auth_ui()
 
     def _apply_window_icon(self):
         window_icon_path = first_existing_desktop_asset(
@@ -432,6 +454,20 @@ class MainWindow(QMainWindow):
             "information": QMessageBox.information,
         }
         handlers.get(level, QMessageBox.warning)(self, title, message)
+
+    def _update_auth_ui(self):
+        if self.auth_context is None:
+            self.auth_user_label.hide()
+            self.logout_btn.hide()
+            return
+
+        display_name = getattr(self.auth_context, "display_name", "") or getattr(self.auth_context, "email", "")
+        email = getattr(self.auth_context, "email", "")
+        label_text = f"Olá, {display_name}"
+        self.auth_user_label.setText(label_text)
+        self.auth_user_label.setToolTip(email or label_text)
+        self.auth_user_label.show()
+        self.logout_btn.show()
 
     def _create_form_label(self, text, min_width=126):
         label = QLabel(text)
@@ -1117,22 +1153,28 @@ class MainWindow(QMainWindow):
         self.v3_features_btn = QPushButton("Novidades V3")
         self.about_btn = QPushButton("Sobre Nós")
         self.help_btn = QPushButton("Help")
+        self.auth_user_label = QLabel("")
+        self.auth_user_label.setStyleSheet("font-size: 8.8pt; color: #204766; padding: 0 8px; font-weight: 700;")
+        self.logout_btn = QPushButton("Encerrar Sessão")
         for button, width in [
             (self.support_files_btn, 118),
             (self.v3_features_btn, 112),
             (self.about_btn, 92),
             (self.help_btn, 72),
+            (self.logout_btn, 126),
         ]:
-            button.setObjectName("utilityButton")
+            button.setObjectName("dangerUtilityButton" if button is self.logout_btn else "utilityButton")
             button.setMinimumWidth(width)
             button.setMaximumWidth(width + 8)
             button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         utility_layout.addWidget(utility_title, 0, Qt.AlignVCenter)
         utility_layout.addStretch(1)
+        utility_layout.addWidget(self.auth_user_label, 0, Qt.AlignVCenter)
         utility_layout.addWidget(self.support_files_btn)
         utility_layout.addWidget(self.v3_features_btn)
         utility_layout.addWidget(self.about_btn)
         utility_layout.addWidget(self.help_btn)
+        utility_layout.addWidget(self.logout_btn)
         main_layout.addWidget(utility_bar, 0)
 
         top_h_layout = QHBoxLayout()
@@ -1456,6 +1498,7 @@ class MainWindow(QMainWindow):
 
     def connect_signals(self):
         """Método para centralizar todas as conexões de sinais e slots."""
+        self.logout_btn.clicked.connect(self.request_logout)
         self.support_files_btn.clicked.connect(self.show_support_files_dialog)
         self.v3_features_btn.clicked.connect(self.show_v3_features_dialog)
         self.about_btn.clicked.connect(self.show_about_dialog)
@@ -1480,6 +1523,17 @@ class MainWindow(QMainWindow):
         self.process_all_btn.clicked.connect(self.start_all_generation)
         self.conclude_project_btn.clicked.connect(self.conclude_project)
         self.export_excel_btn.clicked.connect(self.export_project_to_excel)
+
+    def request_logout(self):
+        reply = QMessageBox.question(
+            self,
+            "Encerrar sessão",
+            "Deseja encerrar a sessão atual e voltar para a tela de login?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply == QMessageBox.Yes:
+            self.logout_requested.emit()
 
     def toggle_theme(self):
         """(NOVA FUNÇÃO) Alterna entre o tema claro e escuro."""
@@ -2802,10 +2856,10 @@ def main():
     if app_icon_path:
         app.setWindowIcon(QIcon(app_icon_path))
     app.setStyleSheet(STYLE)
-    window = MainWindow()
-    window.showMaximized() 
-    #window.show()
-    sys.exit(app.exec_())
+    from .app_controller import DesktopAppController
+
+    controller = DesktopAppController(app)
+    sys.exit(controller.run())
 
 if __name__ == "__main__":
     main()
