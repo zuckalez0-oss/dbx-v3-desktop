@@ -1756,6 +1756,68 @@ class MainWindow(QMainWindow):
         column_idx = self._resolve_template_column(header_map, alias_name, alias_map)
         worksheet.cell(row=row_number, column=column_idx, value=value)
 
+    def _update_new_layout_auxiliary_losses(self, workbook, perda_results_map):
+        # Layout novo: a tabela de perdas fica na aba AUXILIAR e precisa ser atualizada por espessura.
+        auxiliar_sheet = workbook["AUXILIAR"] if "AUXILIAR" in workbook.sheetnames else None
+        if auxiliar_sheet is None:
+            self.log_text.append("AVISO: aba AUXILIAR nao encontrada no layout novo. Tabela de perdas nao foi atualizada.")
+            return
+
+        espessura_col = None
+        perda_col = None
+        header_row = None
+        max_header_scan_rows = min(40, auxiliar_sheet.max_row)
+
+        # Busca dinamica do cabecalho para nao depender de coordenadas fixas na planilha.
+        for row_idx in range(1, max_header_scan_rows + 1):
+            header_map = self._build_worksheet_header_map(auxiliar_sheet, row_idx)
+            if not header_map:
+                continue
+
+            esp_candidate = header_map.get(self._normalize_text_key("ESPESSURA"))
+            perda_candidate = (
+                header_map.get(self._normalize_text_key("Perca Nao cobrado %"))
+                or header_map.get(self._normalize_text_key("Perca Não cobrado %"))
+                or header_map.get(self._normalize_text_key("Perca Nao cobrado"))
+                or header_map.get(self._normalize_text_key("Perda Nao cobrada %"))
+            )
+
+            if esp_candidate is not None and perda_candidate is not None:
+                header_row = row_idx
+                espessura_col = esp_candidate
+                perda_col = perda_candidate
+                break
+
+        if header_row is None:
+            self.log_text.append(
+                "AVISO: cabecalhos de perdas nao encontrados na aba AUXILIAR (ESPESSURA / Perca Nao cobrado %)."
+            )
+            return
+
+        perda_map_arredondado = {round(float(k), 2): v for k, v in perda_results_map.items()}
+        updated_rows = 0
+
+        for row_idx in range(header_row + 1, auxiliar_sheet.max_row + 1):
+            esp_value = auxiliar_sheet.cell(row=row_idx, column=espessura_col).value
+            if esp_value is None or str(esp_value).strip() == "":
+                continue
+
+            try:
+                esp_template = round(float(str(esp_value).replace(',', '.')), 2)
+            except (ValueError, TypeError):
+                continue
+
+            percentual_perda = perda_map_arredondado.get(esp_template, 0.0)
+            perda_cell = auxiliar_sheet.cell(row=row_idx, column=perda_col)
+
+            # Regra de negocio: sempre gravar a perda como fracao decimal (0-1), ex: 30,12% -> 0,30.
+            perda_cell.value = round(percentual_perda / 100.0, 2)
+            updated_rows += 1
+
+        self.log_text.append(
+            f"Layout novo: tabela de perdas atualizada na aba AUXILIAR ({updated_rows} linha(s))."
+        )
+
     def _get_budget_template_piece_dimensions(self, row_data):
         piece_shape = str(row_data.get('forma', '')).lower()
         if piece_shape == 'circle':
@@ -1954,6 +2016,7 @@ class MainWindow(QMainWindow):
                 QApplication.processEvents()
 
         workbook.save(str(save_path))
+        workbook.close()
         return save_path
 
     def export_project_to_excel(self):
@@ -2239,6 +2302,18 @@ class MainWindow(QMainWindow):
                 
                 # Atualiza barra de progresso baseada no progresso geral estimado
                 self.progress_bar.setValue(50 + int(50 * (list(grouped.groups.keys()).index(espessura) + 1) / len(grouped)))
+
+            # Depois de calcular as perdas por espessura, reabre o layout novo exportado e preenche a aba AUXILIAR.
+            if budget_template_path is not None and new_output_path is not None and perda_results_map:
+                keep_vba_output = Path(new_output_path).suffix.lower() == ".xlsm"
+                wb_new_layout = None
+                try:
+                    wb_new_layout = load_workbook(str(new_output_path), keep_vba=keep_vba_output)
+                    self._update_new_layout_auxiliary_losses(wb_new_layout, perda_results_map)
+                    wb_new_layout.save(str(new_output_path))
+                finally:
+                    if wb_new_layout is not None:
+                        wb_new_layout.close()
 
             project_name_upper = project_number.upper()
             is_special_material = any(keyword in project_name_upper for keyword in ['FF', 'GALV', 'XADREZ'])
