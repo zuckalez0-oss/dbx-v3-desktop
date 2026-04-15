@@ -9,7 +9,7 @@
 - confirmar cadastro público desabilitado
 - confirmar templates de email revisados
 - confirmar SMTP de produção
-- confirmar tabela `public.profiles`
+- confirmar tabela `public.profiles` '
 - confirmar trigger de criação de perfil
 - confirmar `RLS` habilitado
 - confirmar policies aplicadas
