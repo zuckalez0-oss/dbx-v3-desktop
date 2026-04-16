@@ -6,6 +6,23 @@ import io
 import ezdxf
 from ezdxf import bbox
 
+
+def _safe_filename_token(value, fallback):
+    token = str(value).strip() if value is not None else ""
+    if not token:
+        token = fallback
+    return re.sub(r'[^\w.-]+', '_', token)
+
+
+def _format_thickness(value):
+    if value is None or value == "":
+        return "SemEspessura"
+    try:
+        numeric_value = float(str(value).replace(',', '.'))
+        return f"{numeric_value:.2f}"
+    except (TypeError, ValueError):
+        return str(value).strip()
+
 #func criação do desenho dxf
 def create_dxf_drawing(params: dict):
     """Gera um desenho DXF a partir de um dicionário de parâmetros já preparado."""
@@ -41,8 +58,16 @@ def create_dxf_drawing(params: dict):
 
         stream = io.StringIO()
         doc.write(stream)
-        sanitized_filename = re.sub(r'[^\w.-]+', '_', str(params.get('part_name')))
-        return stream.getvalue(), f"{sanitized_filename}.dxf"
+        project_number = params.get('project_number') or params.get('numero_projeto') or params.get('projeto') or params.get('Projeto')
+        part_name = params.get('part_name')
+        thickness_label = _format_thickness(params.get('thickness'))
+
+        filename = "{}_{}_{}MM".format(
+            _safe_filename_token(project_number, "SemProjeto"),
+            _safe_filename_token(part_name, "SemNome"),
+            _safe_filename_token(thickness_label, "SemEspessura")
+        )
+        return stream.getvalue(), f"{filename}.dxf"
 
     except Exception as e:
         print(f"Erro inesperado no desenho do DXF: {e}")
@@ -54,6 +79,8 @@ def prepare_and_validate_dxf_data(raw_data: dict):
 
 
     params['part_name'] = params.get('nome_arquivo')
+    params['project_number'] = params.get('project_number') or params.get('numero_projeto') or params.get('projeto') or params.get('Projeto')
+    params['thickness'] = params.get('espessura')
     params['shape'] = params.get('forma')
     params['width'] = params.get('largura')
     params['height'] = params.get('altura')

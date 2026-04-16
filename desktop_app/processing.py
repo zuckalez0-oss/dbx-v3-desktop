@@ -65,6 +65,7 @@ class ProcessThread(QThread):
                 with zipfile.ZipFile(zip_filename, 'w', zipfile.ZIP_DEFLATED) as zf:
                     for index, row in self.df.iterrows():
                         raw_data = row.to_dict()
+                        raw_data['project_number'] = raw_data.get('project_number') or self.project_number
                         
                         prepared_data, error = dxf_engine.prepare_and_validate_dxf_data(raw_data)
                         if error:
