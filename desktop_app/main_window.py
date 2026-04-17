@@ -6,11 +6,12 @@ import sys
 import os
 import json
 import shutil
+import re
 import pandas as pd
 import time
 import unicodedata
 from pathlib import Path
-from app_paths import find_resource_path
+from app_paths import find_resource_path, get_app_data_dir
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QPushButton, QLabel, QTextEdit, 
                              QFileDialog, QProgressBar, QMessageBox, QGroupBox,
@@ -39,6 +40,160 @@ from calculo_cortes import orquestrar_planos_de_corte
 
 LYPSYOS_WEBSITE_URL = os.environ.get("LYPSYOS_SITE_URL", "https://lypsyos.com")
 LEGACY_BUDGET_TEMPLATE_NAME = "CUSTO_PLASMA-LASER_V22_Definitiva-antigaa"
+DEFAULT_MATERIAL_THICKNESSES = [
+    0.90, 0.95, 1.20, 1.25, 1.50, 1.90, 2.00, 2.25, 2.65, 3.00,
+    3.35, 3.75, 4.25, 4.75, 6.35, 7.94, 9.53, 12.70, 15.88, 19.04,
+    22.22, 25.40, 28.70, 31.75, 32.00, 38.10, 50.00,
+]
+
+
+class MaterialPriceDialog(QDialog):
+    def __init__(self, parent=None, thickness_values=None, existing_prices=None):
+        super().__init__(parent)
+        self.setWindowTitle("Cadastrar valores m.p")
+        self.setMinimumSize(520, 420)
+
+        self._prices = {}
+        self._load_existing_prices(existing_prices or {})
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
+
+        form_layout = QFormLayout()
+        form_layout.setContentsMargins(0, 0, 0, 0)
+        form_layout.setHorizontalSpacing(8)
+        form_layout.setVerticalSpacing(4)
+
+        self.thickness_combo = QComboBox()
+        self.thickness_combo.setEditable(False)
+        for thickness in sorted(set(thickness_values or [])):
+            self.thickness_combo.addItem(self._format_decimal(thickness))
+
+        self.price_input = QLineEdit()
+        self.price_input.setPlaceholderText("Ex.: 5,90")
+
+        form_layout.addRow("Espessura (mm):", self.thickness_combo)
+        form_layout.addRow("Valor m.p (R$/kg):", self.price_input)
+        layout.addLayout(form_layout)
+
+        action_row = QHBoxLayout()
+        self.add_update_btn = QPushButton("Adicionar / Atualizar")
+        self.remove_btn = QPushButton("Remover Selecionado")
+        action_row.addWidget(self.add_update_btn)
+        action_row.addWidget(self.remove_btn)
+        action_row.addStretch(1)
+        layout.addLayout(action_row)
+
+        self.table = QTableWidget(0, 2)
+        self.table.setHorizontalHeaderLabels(["Espessura (mm)", "Valor m.p (R$/kg)"])
+        self.table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.table.setSelectionMode(QTableWidget.SingleSelection)
+        self.table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.table.setAlternatingRowColors(True)
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        layout.addWidget(self.table, 1)
+
+        button_box = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        layout.addWidget(button_box)
+
+        self.add_update_btn.clicked.connect(self._upsert_price)
+        self.remove_btn.clicked.connect(self._remove_selected)
+        self.table.itemSelectionChanged.connect(self._load_selected_into_form)
+        button_box.accepted.connect(self.accept)
+        button_box.rejected.connect(self.reject)
+
+        self._refresh_table()
+
+    @staticmethod
+    def _format_decimal(value):
+        value_float = float(value)
+        return f"{value_float:.2f}"
+
+    @staticmethod
+    def _parse_float(value, field_label):
+        raw_value = str(value or "").strip().replace(",", ".")
+        if not raw_value:
+            raise ValueError(f"Informe um valor para {field_label}.")
+        try:
+            return float(raw_value)
+        except (TypeError, ValueError):
+            raise ValueError(f"{field_label} deve ser numérico.")
+
+    @classmethod
+    def _normalize_thickness_key(cls, value):
+        return round(cls._parse_float(value, "espessura"), 2)
+
+    def _load_existing_prices(self, existing_prices):
+        for thickness, price in (existing_prices or {}).items():
+            try:
+                thickness_key = self._normalize_thickness_key(thickness)
+                price_value = self._parse_float(price, "valor m.p")
+            except ValueError:
+                continue
+            if price_value <= 0:
+                continue
+            self._prices[thickness_key] = round(price_value, 4)
+
+    def _refresh_table(self):
+        sorted_items = sorted(self._prices.items(), key=lambda item: item[0])
+        self.table.setRowCount(len(sorted_items))
+        for row_idx, (thickness, price) in enumerate(sorted_items):
+            self.table.setItem(row_idx, 0, QTableWidgetItem(self._format_decimal(thickness)))
+            self.table.setItem(row_idx, 1, QTableWidgetItem(self._format_decimal(price)))
+        self.remove_btn.setEnabled(bool(sorted_items))
+
+    def _load_selected_into_form(self):
+        selected_row = self.table.currentRow()
+        if selected_row < 0:
+            return
+        thickness_item = self.table.item(selected_row, 0)
+        price_item = self.table.item(selected_row, 1)
+        if thickness_item is None or price_item is None:
+            return
+        self.thickness_combo.setCurrentText(thickness_item.text())
+        self.price_input.setText(price_item.text())
+
+    def _upsert_price(self):
+        try:
+            thickness = self._normalize_thickness_key(self.thickness_combo.currentText())
+            price = self._parse_float(self.price_input.text(), "valor m.p")
+        except ValueError as exc:
+            QMessageBox.warning(self, "Cadastro de m.p", str(exc))
+            return
+
+        if thickness <= 0:
+            QMessageBox.warning(self, "Cadastro de m.p", "A espessura deve ser maior que zero.")
+            return
+        if price <= 0:
+            QMessageBox.warning(self, "Cadastro de m.p", "O valor de m.p deve ser maior que zero.")
+            return
+
+        self._prices[thickness] = round(price, 4)
+        formatted_thickness = self._format_decimal(thickness)
+        if self.thickness_combo.findText(formatted_thickness) == -1:
+            self.thickness_combo.addItem(formatted_thickness)
+        self._refresh_table()
+
+    def _remove_selected(self):
+        selected_row = self.table.currentRow()
+        if selected_row < 0:
+            return
+        thickness_item = self.table.item(selected_row, 0)
+        if thickness_item is None:
+            return
+        try:
+            thickness_key = self._normalize_thickness_key(thickness_item.text())
+        except ValueError:
+            return
+
+        if thickness_key in self._prices:
+            del self._prices[thickness_key]
+        self._refresh_table()
+
+    def get_prices(self):
+        return dict(self._prices)
 
 
 def desktop_asset_path(*parts):
@@ -96,9 +251,9 @@ QFrame#utilityBar {
 QPushButton#utilityButton {
     background-color: transparent;
     color: #173b5a;
-    border: 1px solid transparent;
+    border: 1px solid #CDE8EA;
     border-radius: 7px;
-    padding: 3px 10px;
+    padding: 3px 12px;
     min-height: 22px;
     max-height: 24px;
     font-size: 8.4pt;
@@ -294,9 +449,9 @@ QFrame#utilityBar {
 QPushButton#utilityButton {
     background-color: transparent;
     color: #ECF0F1;
-    border: 1px solid transparent;
+    border: 1px solid #3f6f86;
     border-radius: 7px;
-    padding: 3px 10px;
+    padding: 3px 12px;
     min-height: 22px;
     max-height: 24px;
     font-size: 8.4pt;
@@ -430,6 +585,9 @@ class MainWindow(QMainWindow):
         self.project_directory = None
         self.auto_upload_image_path = None
         self.auto_upload_json_path = None
+        self.material_price_by_thickness = {}
+        self.material_price_config_path = Path(get_app_data_dir()) / "material_prices.json"
+        self._load_material_price_registry()
 
         self.initUI() 
         self.connect_signals() 
@@ -480,7 +638,11 @@ class MainWindow(QMainWindow):
     def _normalize_text_key(self, value):
         normalized = unicodedata.normalize("NFKD", str(value or ""))
         normalized = normalized.encode("ascii", "ignore").decode("ascii")
-        return normalized.strip().lower().replace("-", "_").replace(" ", "_")
+        normalized = normalized.strip().lower()
+        # Uniformiza espacos/simbolos para evitar falha em cabecalhos com variacoes como
+        # "VALOR  - KG", "VALOR - KG" ou "VALOR/KG".
+        normalized = re.sub(r"[^a-z0-9]+", "_", normalized)
+        return normalized.strip("_")
 
     def _coerce_float(self, value, default=0.0):
         if value in (None, "", "-"):
@@ -491,6 +653,142 @@ class MainWindow(QMainWindow):
             return float(value)
         except (TypeError, ValueError):
             return default
+
+    @staticmethod
+    def _normalize_thickness_key(value):
+        raw_value = str(value or "").strip().replace(",", ".")
+        return round(float(raw_value), 2)
+
+    def _load_material_price_registry(self):
+        self.material_price_by_thickness = {}
+        if not self.material_price_config_path.exists():
+            return
+
+        try:
+            payload = json.loads(self.material_price_config_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            print(f"AVISO: falha ao ler cadastro de m.p: {exc}")
+            return
+
+        raw_prices = payload.get("by_thickness", payload) if isinstance(payload, dict) else {}
+        if not isinstance(raw_prices, dict):
+            return
+
+        for thickness, price in raw_prices.items():
+            try:
+                thickness_key = self._normalize_thickness_key(thickness)
+                price_value = float(str(price).replace(",", "."))
+            except (TypeError, ValueError):
+                continue
+            if thickness_key <= 0 or price_value <= 0:
+                continue
+            self.material_price_by_thickness[thickness_key] = round(price_value, 4)
+
+    def _save_material_price_registry(self):
+        serializable_prices = {
+            f"{thickness:.2f}": price
+            for thickness, price in sorted(self.material_price_by_thickness.items(), key=lambda item: item[0])
+        }
+        payload = {
+            "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "by_thickness": serializable_prices,
+        }
+        self.material_price_config_path.parent.mkdir(parents=True, exist_ok=True)
+        self.material_price_config_path.write_text(
+            json.dumps(payload, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+    def _collect_registered_thicknesses(self):
+        values = set(self._load_material_thicknesses_from_template())
+
+        for data_frame in (self.excel_df, self.manual_df):
+            if data_frame.empty or "espessura" not in data_frame.columns:
+                continue
+            for value in data_frame["espessura"].dropna().tolist():
+                try:
+                    values.add(self._normalize_thickness_key(value))
+                except (TypeError, ValueError):
+                    continue
+
+        values.update(self.material_price_by_thickness.keys())
+        return sorted(values)
+
+    def _load_material_thicknesses_from_template(self):
+        budget_template_path = find_resource_path("planilha_orcamento_laser_plasma_ref_Rev1.xlsm")
+        if budget_template_path is None:
+            return list(DEFAULT_MATERIAL_THICKNESSES)
+
+        workbook = None
+        try:
+            workbook = load_workbook(str(budget_template_path), data_only=True)
+            auxiliar_sheet = workbook["AUXILIAR"] if "AUXILIAR" in workbook.sheetnames else None
+            if auxiliar_sheet is None:
+                return list(DEFAULT_MATERIAL_THICKNESSES)
+
+            espessura_col = None
+            header_row = None
+            max_header_scan_rows = min(40, auxiliar_sheet.max_row)
+
+            for row_idx in range(1, max_header_scan_rows + 1):
+                header_map = self._build_worksheet_header_map(auxiliar_sheet, row_idx)
+                if not header_map:
+                    continue
+
+                esp_candidate = header_map.get(self._normalize_text_key("CUSTO KG"))
+                if esp_candidate is not None:
+                    header_row = row_idx
+                    espessura_col = esp_candidate
+                    break
+
+            if header_row is None or espessura_col is None:
+                return list(DEFAULT_MATERIAL_THICKNESSES)
+
+            extracted_values = set()
+            for row_idx in range(header_row + 1, auxiliar_sheet.max_row + 1):
+                raw_value = auxiliar_sheet.cell(row=row_idx, column=espessura_col).value
+                if raw_value is None or str(raw_value).strip() == "":
+                    continue
+                try:
+                    parsed = self._normalize_thickness_key(raw_value)
+                except (TypeError, ValueError):
+                    continue
+                if 0 < parsed <= 50:
+                    extracted_values.add(parsed)
+
+            if extracted_values:
+                return sorted(extracted_values)
+            return list(DEFAULT_MATERIAL_THICKNESSES)
+        except Exception:
+            return list(DEFAULT_MATERIAL_THICKNESSES)
+        finally:
+            if workbook is not None:
+                workbook.close()
+
+    def open_material_price_dialog(self):
+        dialog = MaterialPriceDialog(
+            parent=self,
+            thickness_values=self._collect_registered_thicknesses(),
+            existing_prices=self.material_price_by_thickness,
+        )
+        if dialog.exec_() != QDialog.Accepted:
+            return
+
+        self.material_price_by_thickness = dialog.get_prices()
+        try:
+            self._save_material_price_registry()
+        except Exception as exc:
+            QMessageBox.warning(
+                self,
+                "Cadastro de m.p",
+                f"Os valores foram atualizados em memória, mas não foi possível salvar em disco:\n{exc}",
+            )
+            return
+
+        self.log_text.append(
+            f"Cadastro m.p atualizado: {len(self.material_price_by_thickness)} espessura(s) cadastrada(s)."
+        )
+        self.statusBar().showMessage("Cadastro de m.p atualizado.", 3000)
 
     def _normalize_shape_value(self, value):
         shape_key = self._normalize_text_key(value)
@@ -1150,6 +1448,7 @@ class MainWindow(QMainWindow):
         utility_title = QLabel("DBX-V3")
         utility_title.setStyleSheet("font-size: 9pt; font-weight: 700; color: #1caeb8;")
         self.support_files_btn = QPushButton("Arquivos Base")
+        self.material_prices_btn = QPushButton("CADASTRO-MP")
         self.v3_features_btn = QPushButton("Novidades V3")
         self.about_btn = QPushButton("Sobre Nós")
         self.help_btn = QPushButton("Help")
@@ -1158,6 +1457,7 @@ class MainWindow(QMainWindow):
         self.logout_btn = QPushButton("Encerrar Sessão")
         for button, width in [
             (self.support_files_btn, 118),
+            (self.material_prices_btn, 136),
             (self.v3_features_btn, 112),
             (self.about_btn, 92),
             (self.help_btn, 72),
@@ -1171,6 +1471,7 @@ class MainWindow(QMainWindow):
         utility_layout.addStretch(1)
         utility_layout.addWidget(self.auth_user_label, 0, Qt.AlignVCenter)
         utility_layout.addWidget(self.support_files_btn)
+        utility_layout.addWidget(self.material_prices_btn)
         utility_layout.addWidget(self.v3_features_btn)
         utility_layout.addWidget(self.about_btn)
         utility_layout.addWidget(self.help_btn)
@@ -1363,7 +1664,7 @@ class MainWindow(QMainWindow):
         rep_layout.setHorizontalSpacing(6)
         rep_layout.setVerticalSpacing(3)
         self.rep_diam_input, self.rep_offset_input = QLineEdit(), QLineEdit()
-        rep_layout.addRow(self._create_form_label("Diâmetro Furos:", 92), self.rep_diam_input)
+        rep_layout.addRow(self._create_form_label("Ø Furos:", 92), self.rep_diam_input)
         rep_layout.addRow(self._create_form_label("Offset Borda:", 92), self.rep_offset_input)
         self.replicate_btn = QPushButton("Replicar Furos")
         self.replicate_btn.setMinimumHeight(22)
@@ -1500,6 +1801,7 @@ class MainWindow(QMainWindow):
         """Método para centralizar todas as conexões de sinais e slots."""
         self.logout_btn.clicked.connect(self.request_logout)
         self.support_files_btn.clicked.connect(self.show_support_files_dialog)
+        self.material_prices_btn.clicked.connect(self.open_material_price_dialog)
         self.v3_features_btn.clicked.connect(self.show_v3_features_dialog)
         self.about_btn.clicked.connect(self.show_about_dialog)
         self.help_btn.clicked.connect(self.show_help_dialog)
@@ -1588,6 +1890,7 @@ class MainWindow(QMainWindow):
         self.start_project_btn.setEnabled(True)
         self.history_btn.setEnabled(True)
         self.v3_features_btn.setEnabled(True)
+        self.material_prices_btn.setEnabled(True)
         self.select_file_btn.setEnabled(is_project_active)
         self.import_dxf_btn.setEnabled(is_project_active)
         self.clear_excel_btn.setEnabled(is_project_active and not self.excel_df.empty)
@@ -1818,6 +2121,70 @@ class MainWindow(QMainWindow):
             f"Layout novo: tabela de perdas atualizada na aba AUXILIAR ({updated_rows} linha(s))."
         )
 
+    def _update_new_layout_auxiliary_material_prices(self, workbook):
+        if not self.material_price_by_thickness:
+            return
+
+        auxiliar_sheet = workbook["AUXILIAR"] if "AUXILIAR" in workbook.sheetnames else None
+        if auxiliar_sheet is None:
+            self.log_text.append("AVISO: aba AUXILIAR nao encontrada no layout novo. Cadastro de m.p nao foi aplicado.")
+            return
+
+        espessura_col = None
+        valor_kg_col = None
+        header_row = None
+        max_header_scan_rows = min(40, auxiliar_sheet.max_row)
+
+        for row_idx in range(1, max_header_scan_rows + 1):
+            header_map = self._build_worksheet_header_map(auxiliar_sheet, row_idx)
+            if not header_map:
+                continue
+
+            esp_candidate = header_map.get(self._normalize_text_key("CUSTO KG"))
+            valor_candidate = (
+                header_map.get(self._normalize_text_key("VALOR - KG"))
+                or header_map.get(self._normalize_text_key("VALOR- KG"))
+                or header_map.get(self._normalize_text_key("VALOR-KG"))
+                or header_map.get(self._normalize_text_key("VALOR KG"))
+            )
+
+            if esp_candidate is not None and valor_candidate is not None:
+                header_row = row_idx
+                espessura_col = esp_candidate
+                valor_kg_col = valor_candidate
+                break
+
+        if header_row is None:
+            self.log_text.append(
+                "AVISO: cabecalhos de m.p nao encontrados na aba AUXILIAR (CUSTO KG / VALOR - KG)."
+            )
+            return
+
+        updated_rows = 0
+        for row_idx in range(header_row + 1, auxiliar_sheet.max_row + 1):
+            esp_value = auxiliar_sheet.cell(row=row_idx, column=espessura_col).value
+            if esp_value is None or str(esp_value).strip() == "":
+                continue
+
+            try:
+                esp_template = self._normalize_thickness_key(esp_value)
+            except (TypeError, ValueError):
+                continue
+
+            if esp_template not in self.material_price_by_thickness:
+                continue
+
+            auxiliar_sheet.cell(
+                row=row_idx,
+                column=valor_kg_col,
+                value=self.material_price_by_thickness[esp_template],
+            )
+            updated_rows += 1
+
+        self.log_text.append(
+            f"Layout novo: cadastro de m.p aplicado na aba AUXILIAR ({updated_rows} linha(s) atualizada(s))."
+        )
+
     def _get_budget_template_piece_dimensions(self, row_data):
         piece_shape = str(row_data.get('forma', '')).lower()
         if piece_shape == 'circle':
@@ -2014,6 +2381,8 @@ class MainWindow(QMainWindow):
             if index % 10 == 0 or index == total_records - 1:
                 self.progress_bar.setValue(int(((index + 1) / max(total_records, 1)) * 100))
                 QApplication.processEvents()
+
+        self._update_new_layout_auxiliary_material_prices(workbook)
 
         workbook.save(str(save_path))
         workbook.close()
@@ -2562,6 +2931,7 @@ class MainWindow(QMainWindow):
         self.history_btn.setEnabled(enabled)
         self.theme_toggle_btn.setEnabled(enabled)
         self.v3_features_btn.setEnabled(enabled)
+        self.material_prices_btn.setEnabled(enabled)
         self.select_file_btn.setEnabled(enabled and is_project_active)
         self.import_dxf_btn.setEnabled(enabled and is_project_active) 
         self.clear_excel_btn.setEnabled(enabled and is_project_active and not self.excel_df.empty)
